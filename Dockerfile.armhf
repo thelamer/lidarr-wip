@@ -1,0 +1,72 @@
+# build stage
+FROM mcr.microsoft.com/dotnet/core/sdk:3.0.100-preview8-bionic as buildstage
+
+RUN \
+ echo "**** install runtime *****" && \
+ curl -s https://deb.nodesource.com/gpgkey/nodesource.gpg.key | apt-key add - && \
+ echo 'deb https://deb.nodesource.com/node_10.x bionic main' > /etc/apt/sources.list.d/nodesource.list && \
+ echo "**** install yarn repository ****" && \
+ curl -sS https://dl.yarnpkg.com/debian/pubkey.gpg | apt-key add - && \
+ echo "deb https://dl.yarnpkg.com/debian/ stable main" > /etc/apt/sources.list.d/yarn.list && \
+ apt-get update && \
+ apt-get install -y \
+	build-essential \
+	nodejs \
+	yarn
+RUN \
+ echo "**** grab and modify Lidarr source *****" && \
+ git clone https://github.com/lidarr/Lidarr.git --branch dotnet-clean-2 && \
+ cd Lidarr && \
+ sed -i 's_<PlatformTarget>x64</PlatformTarget>_<PlatformTarget>AnyCPU</PlatformTarget>_g' src/Directory.Build.props && \
+ sed -i 's/win-x64;osx-x64;linux-x64/win-x64;osx-x64;linux-x64;linux-arm;linux-arm64/g' src/Directory.Build.props
+
+RUN \
+ echo "**** build from source *****" && \
+ cd /Lidarr && \
+ yarn install && \
+ yarn run build --production && \
+ dotnet publish ./src/Lidarr.sln -c Release -f netcoreapp3.0 -r linux-arm
+
+RUN \
+ echo "**** package files *****" && \
+ cp -ax \
+	/Lidarr/_output/UI \
+	/Lidarr/_output/netcoreapp3.0/linux-arm/publish/ && \
+ mv \
+	/Lidarr/_output/netcoreapp3.0/linux-arm/publish \
+	/buildout
+
+# runtime stage
+FROM lsiobase/ubuntu:arm32v7-bionic
+
+# set version label
+ARG BUILD_DATE
+ARG VERSION
+LABEL build_version="Linuxserver.io version:- ${VERSION} Build-date:- ${BUILD_DATE}"
+LABEL maintainer="thelamer"
+
+# environment settings
+ARG DEBIAN_FRONTEND="noninteractive"
+ARG LIDARR_BRANCH="develop"
+
+RUN \
+ echo "**** install packages ****" && \
+ apt-get update && \
+ apt-get install --no-install-recommends -y \
+	libchromaprint-tools \
+	libsqlite3-dev && \
+ echo "**** make destinaiton for lidarr ****" && \
+ mkdir -p /app/lidarr && \
+ echo "**** cleanup ****" && \
+ rm -rf \
+	/tmp/* \
+	/var/lib/apt/lists/* \
+	/var/tmp/*
+
+# copy local files
+COPY --from=buildstage /buildout /app/lidarr
+COPY root/ /
+
+# ports and volumes
+EXPOSE 8686
+VOLUME /config /downloads /music
